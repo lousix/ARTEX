@@ -23,6 +23,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
+		if lane, ok := p["lane"]; ok {
+			m["lane"] = lane
+		}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -1019,6 +1022,7 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
 type intentItem struct {
+	Lane      string            `json:"lane"`
 	Summary   string            `json:"summary"`
 	AssetIDs  []json.RawMessage `json:"asset_ids"`
 	ParentIDs []json.RawMessage `json:"parent_ids"`
@@ -1030,6 +1034,19 @@ type intentItem struct {
 // 节点（不能挂在别的意图/目标/提示上）。顶层全新方向留空 parent_ids，兜底连 origin fact。
 // 这样"每个意图都连到 fact 节点、且是发现驱动而非凭空规划"从创建路径上被强制。
 func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
+	if it.Lane == "" {
+		it.Lane = "dynamic"
+	}
+	if it.Lane != "code" && it.Lane != "dynamic" && it.Lane != "authz_verify" {
+		return 0, fmt.Errorf("lane 必须为 code / dynamic / authz_verify")
+	}
+	if cfg, err := t.ts.Assessment(); err != nil {
+		return 0, err
+	} else if cfg != nil && cfg.Mode == "code_audit" && it.Lane != "code" {
+		return 0, fmt.Errorf("纯代码审计只允许 code 意图")
+	} else if it.Lane == "code" && (cfg == nil || cfg.SourcePath == "") {
+		return 0, fmt.Errorf("code 意图需要任务关联源码")
+	}
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary 不能为空")
 	}
@@ -1064,7 +1081,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("%s", b.String())
 		}
 	}
-	payload := map[string]any{"summary": it.Summary}
+	payload := map[string]any{"summary": it.Summary, "lane": it.Lane}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
@@ -1093,6 +1110,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。",
 		obj(map[string]any{
 			"intents":    map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"lane":       str("执行类型 code 源码审计 / dynamic 动态渗透（默认）/ authz_verify 多身份越权验证；批量时在每个元素中指定"),
 			"summary":    str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
@@ -1221,6 +1239,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"vulnclass": str("漏洞类别"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
 		"evidence":         str("证据/PoC 文本"),
+		"code_fact_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：本任务 code_hypothesis fact ID；系统将已保存的源码证据附到漏洞 evidence 中"},
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search 返回的真实流量 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("该流量如何支持漏洞结论")}, "traffic_id")},
@@ -1231,12 +1250,30 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
+			CodeFactIDs                                  []json.RawMessage `json:"code_fact_ids"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
+		}
+		if len(a.CodeFactIDs) > 8 {
+			return actool.Errorf("最多关联 8 个代码候选"), nil
+		}
+		for _, rawID := range a.CodeFactIDs {
+			fid:=pid(rawID)
+			if fid<=0 { return actool.Errorf("code_fact_ids 包含无效节点 ID"),nil }
+			n, err := t.ts.GetNode(fid)
+			if err != nil || n == nil || n.Kind != db.KindFact {
+				return actool.Errorf("code_fact_ids 必须为本任务代码候选节点"), nil
+			}
+			var p map[string]any
+			if json.Unmarshal(n.Payload, &p) != nil || p["fact_type"] != "code_hypothesis" {
+				return actool.Errorf("关联节点不是 code_hypothesis"), nil
+			}
+			raw, _ := json.MarshalIndent(p, "", "  ")
+			a.Evidence += fmt.Sprintf("\n\n关联源码候选 fact #%d（动态结论以上方实际验证为准）：\n```json\n%s\n```", fid, raw)
 		}
 		// Auto-binding off: ignore the evidence params instead of rejecting the call.
 		// stripTrafficParameters already removes them from the advertised schema, but

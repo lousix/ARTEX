@@ -25,7 +25,8 @@ web/next-env.d.ts
 *.swo
 
 # docs
-/docs/
+/docs/*
+!/docs/hybrid-audit.md
 
 # os
 .DS_Store

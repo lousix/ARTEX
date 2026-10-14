@@ -1223,9 +1223,7 @@ const TaskRow = React.memo(function TaskRow({
           const f = task.findings;
           const total = f ? f.critical + f.high + f.medium + f.low : 0;
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
-          const seg = (n: number, cls: string) => (
-            <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>
-          );
+          const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
             <span className="font-medium whitespace-nowrap" title="严重 / 高 / 中 / 低">
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
@@ -3086,6 +3084,11 @@ function CreateTaskSheet({
   const [timeoutMin, setTimeoutMin] = React.useState(""); // 任务级超时(分钟);空/0 = 不限时
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
+  const [assessmentMode, setAssessmentMode] = React.useState<"blackbox" | "hybrid" | "code_audit">("blackbox");
+  const [sourcePath, setSourcePath] = React.useState("");
+  const [sourceRevision, setSourceRevision] = React.useState("");
+  const [targetBaseURL, setTargetBaseURL] = React.useState("");
+  const [authProfilesJSON, setAuthProfilesJSON] = React.useState("[]");
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
@@ -3142,6 +3145,8 @@ function CreateTaskSheet({
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
       const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
+      const authProfiles = JSON.parse(authProfilesJSON);
+      if (!Array.isArray(authProfiles)) throw new Error("登录身份配置必须是 JSON 数组");
       await api.createTask({
         name: name.trim(),
         categoryId: categoryID,
@@ -3151,7 +3156,17 @@ function CreateTaskSheet({
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
         timeoutSeconds: timeoutSec,
-        seedFirstIntent,
+        seedFirstIntent: assessmentMode === "blackbox" && seedFirstIntent,
+        assessment:
+          assessmentMode !== "blackbox" || authProfiles.length > 0
+            ? {
+                mode: assessmentMode,
+                source_path: sourcePath.trim(),
+                revision: sourceRevision.trim(),
+                base_url: targetBaseURL.trim(),
+                profiles: assessmentMode === "code_audit" ? [] : authProfiles,
+              }
+            : undefined,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
         interceptRules: interceptRules
@@ -3170,6 +3185,11 @@ function CreateTaskSheet({
       setTimeoutMin("");
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
+      setAssessmentMode("blackbox");
+      setSourcePath("");
+      setSourceRevision("");
+      setTargetBaseURL("");
+      setAuthProfilesJSON("[]");
       setCoverageEnabled(true);
       setInterceptRules([]);
       setUploadCount(0);
@@ -3286,6 +3306,72 @@ function CreateTaskSheet({
               />
             </div>
             <Field>
+              <FieldLabel htmlFor="assessment-mode">测试模式</FieldLabel>
+              <Select value={assessmentMode} onValueChange={(v) => setAssessmentMode(v as typeof assessmentMode)}>
+                <SelectTrigger id="assessment-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="blackbox">黑盒渗透</SelectItem>
+                  <SelectItem value="hybrid">源码审计 + 动态验证</SelectItem>
+                  <SelectItem value="code_audit">只读源码审计</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>混合模式先分析代码，再通过现有渗透流程验证候选问题。</FieldDescription>
+            </Field>
+            {assessmentMode !== "blackbox" && (
+              <div className="grid gap-3">
+                <Label htmlFor="audit-source-path">源码目录</Label>
+                <Input
+                  id="audit-source-path"
+                  placeholder="工作空间相对目录，例如 sources/shop-api"
+                  value={sourcePath}
+                  onChange={(e) => setSourcePath(e.target.value)}
+                />
+                <Label htmlFor="audit-revision">源码版本（可选）</Label>
+                <Input
+                  id="audit-revision"
+                  placeholder="commit SHA 或交付版本"
+                  value={sourceRevision}
+                  onChange={(e) => setSourceRevision(e.target.value)}
+                />
+                <p className="text-muted-foreground text-xs">
+                  先将源码放入工作空间；审计过程中保持该目录不变，候选问题会保存引用片段。
+                </p>
+              </div>
+            )}
+            {assessmentMode !== "code_audit" && (
+              <Collapsible>
+                <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium">
+                  <ChevronRightIcon className="size-4" />
+                  登录身份（可选）
+                </CollapsibleTrigger>
+                <CollapsibleContent className="grid gap-3 pt-3">
+                  <Label htmlFor="auth-base-url">登录和验证站点</Label>
+                  <Input
+                    id="auth-base-url"
+                    placeholder="https://test.example.com"
+                    value={targetBaseURL}
+                    onChange={(e) => setTargetBaseURL(e.target.value)}
+                  />
+                  <Label htmlFor="auth-profiles">登录脚本配置（JSON 数组）</Label>
+                  <Textarea
+                    id="auth-profiles"
+                    className="min-h-28 font-mono text-xs"
+                    value={authProfilesJSON}
+                    onChange={(e) => setAuthProfilesJSON(e.target.value)}
+                    placeholder={
+                      '[{"name":"user_a","script_path":"auth/login.py","identity_path":"/api/me","subject_field":"id"}]'
+                    }
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    每个身份指定 Python 脚本和身份检查接口。凭据通过 ARTEX_LOGIN_SECRET_
+                    前缀环境变量提供；同一脚本可按身份名称登录不同账号。
+                  </p>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+            <Field>
               <FieldLabel htmlFor="source-tasks">关联任务</FieldLabel>
               <SourceTaskPicker
                 tasks={tasks}
@@ -3373,6 +3459,7 @@ function CreateTaskSheet({
                   <label htmlFor="seed-first-intent" className="flex items-center gap-2 text-sm">
                     <Checkbox
                       id="seed-first-intent"
+                      disabled={assessmentMode !== "blackbox"}
                       checked={seedFirstIntent}
                       onCheckedChange={(v) => setSeedFirstIntent(!!v)}
                     />

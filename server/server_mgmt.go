@@ -147,6 +147,10 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := false
 	defer func() {
+		if deleted && s.authSessions != nil {
+			taskID, _ := strconv.ParseInt(id, 10, 64)
+			s.authSessions.Forget(taskID)
+		}
 		if !deleted {
 			s.abortTaskDelete(id)
 		}

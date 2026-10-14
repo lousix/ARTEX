@@ -141,6 +141,7 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 // defaultEnabledTools is the hard-coded set of tools that enter the intercept
 // rule system when no intercept_enabled_tools setting has been saved.
 var defaultEnabledTools = []string{
+	"http_request_as", "authz_compare", "refresh_auth_profile",
 	"Bash", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",

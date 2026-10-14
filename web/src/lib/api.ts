@@ -260,6 +260,13 @@ export const api = {
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
+    assessment?: {
+      mode: "blackbox" | "hybrid" | "code_audit";
+      source_path?: string;
+      revision?: string;
+      base_url?: string;
+      profiles?: { name: string; script_path: string; identity_path: string; subject_field?: string }[];
+    };
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -274,6 +281,7 @@ export const api = {
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
+      assessment: input.assessment,
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),

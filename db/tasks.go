@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/Autumn-27/artex/hybrid"
 )
 
 // Task is a row in the task registry (1:1 with an exploration).
@@ -144,6 +146,7 @@ func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSe
 // TaskCreateOptions contains the task data that must be committed atomically
 // with the task/exploration row.
 type TaskCreateOptions struct {
+	Assessment           *hybrid.Config
 	Name                 string // 可选任务名称;空=未命名
 	CategoryID           *int64
 	SourceTaskIDs        []int64
@@ -184,6 +187,7 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 	// is global and shared, not isolated per task). Being a fact (not a special 'begin' kind) lets every
 	// intent uniformly connect to a fact node, including the first ones.
 	originPayload, _ := json.Marshal(map[string]any{
+		"assessment":  opts.Assessment,
 		"summary":     "任务起点：" + description + "；目标：" + goal,
 		"description": description,
 		"goal":        goal,
