@@ -20,11 +20,12 @@ type Profile struct {
 // Config contains no credentials. Scripts receive credentials from the operator's
 // environment; session material remains in the server's memory.
 type Config struct {
-	Mode       string    `json:"mode"`
-	SourcePath string    `json:"source_path,omitempty"`
-	Revision   string    `json:"revision,omitempty"`
-	BaseURL    string    `json:"base_url,omitempty"`
-	Profiles   []Profile `json:"profiles,omitempty"`
+	Mode          string         `json:"mode"`
+	SourcePath    string         `json:"source_path,omitempty"`
+	SourceArchive *SourceArchive `json:"source_archive,omitempty"`
+	Revision      string         `json:"revision,omitempty"`
+	BaseURL       string         `json:"base_url,omitempty"`
+	Profiles      []Profile      `json:"profiles,omitempty"`
 }
 
 // Resolve follows symlinks and then enforces containment, including nested links.
@@ -56,7 +57,7 @@ func (c Config) Validate(root string) error {
 		return errors.New("mode 必须为 blackbox / hybrid / code_audit")
 	}
 	if c.Mode != "blackbox" && c.SourcePath == "" {
-		return errors.New("代码审计需要 source_path")
+		return errors.New("代码审计需要项目源码，请上传 ZIP 代码包")
 	}
 	if c.SourcePath != "" {
 		p, err := Resolve(root, c.SourcePath)

@@ -950,7 +950,8 @@ func (s *Server) Handler() http.Handler {
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
+	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion,
+		"features": map[string]bool{"source_archive_upload": true}})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
@@ -1467,8 +1468,10 @@ type createTaskReq struct {
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "bad json: "+err.Error())
+	sourceUpload, decodeErr := s.decodeTaskCreation(w, r, &req)
+	defer sourceUpload.cleanup()
+	if decodeErr != nil {
+		writeErr(w, 400, decodeErr.Error())
 		return
 	}
 	if strings.TrimSpace(req.Description) == "" {
@@ -1524,9 +1527,14 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
 		return
 	}
+	var prepareAssessment func(int64) error
+	if sourceUpload != nil {
+		prepareAssessment = sourceUpload.prepare
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
-		Assessment: req.Assessment,
-		Name:       strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
+		PrepareAssessment: prepareAssessment,
+		Assessment:        req.Assessment,
+		Name:              strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
@@ -1543,6 +1551,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if sourceUpload != nil {
+		sourceUpload.committed = true
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。

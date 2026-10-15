@@ -4,10 +4,12 @@
 
 ## 启动一个混合任务
 
-1. 将源码目录放到服务器工作空间（`workDir`，通常为 `data`）的 `sources/shop-api/`。此版本不自动解压、拉取仓库或执行仓库内构建脚本。保持源码目录不变，填写交付版本/commit SHA。
+1. 在「新建任务」中选择「源码审计 + 动态验证」或「只读源码审计」，点击「选择 ZIP 代码包」上传项目。无需填写项目路径、复制目录到服务器或手动解压；可选填写交付版本/commit SHA。
 2. 将 `examples/hybrid/login.py` 复制到工作空间的 `auth/login.py`，按应用修改登录地址、参数和身份字段。脚本是操作员提供的可执行代码，在后端机器上运行，不是容器沙箱。使用可信的脚本。
 3. 在启动后端的环境中配置 `ARTEX_LOGIN_SECRET_USER_A_USERNAME/PASSWORD`、`ARTEX_LOGIN_SECRET_USER_B_USERNAME/PASSWORD`。服务端启动时将 `ARTEX_LOGIN_SECRET_` 前缀变量移入会话管理器内存并从进程环境移除，只给登录脚本注入，避免 Agent 的 Bash/MCP 子进程直接继承。不要把凭据写入任务描述、脚本或源码目录。脚本需要自行为应用的代理/CA 设置负责。这是凭据传递隔离，不是对任意本机进程或 Agent 文件访问的 OS 沙箱。
-4. 创建任务时选择混合模式，设置 `source_path=sources/shop-api` 和目标站点，添加下面的登录身份配置。
+4. 混合模式另外填写目标站点和下面的登录身份配置。只读源码审计不需要站点、登录脚本或账号。
+
+代码包在点击「创建」时上传并解压到该任务专属目录，任务事务提交后才启动审计。取消表单不会留下服务器上传文件；创建失败会清理本次解压内容。支持 ZIP（最多 128 MiB），解压总计最多 512 MiB、单文件最多 32 MiB、最多 50000 个条目；拒绝越界路径、软链接和特殊文件。自动识别 GitHub 等 ZIP 常见的单层项目包装目录，忽略 macOS 打包元数据。建议打包前排除 node_modules、构建产物和无关大文件。
 
 ```json
 [
@@ -20,7 +22,7 @@
 
 ## API
 
-在现有 `POST /api/tasks` 中增加 `assessment`：
+`POST /api/tasks` 使用 `multipart/form-data`：字段 `task` 为任务 JSON，字段 `source` 为 ZIP 文件。`task` 示例：
 
 ```json
 {
@@ -28,7 +30,6 @@
   "goal":"审计订单模块并验证对象级授权，交付可复现问题和未验证候选",
   "assessment":{
     "mode":"hybrid",
-    "source_path":"sources/shop-api",
     "revision":"COMMIT_SHA",
     "base_url":"https://test.example.com",
     "profiles":[
@@ -39,7 +40,16 @@
 }
 ```
 
-`GET /api/tasks/{id}/assessment` 返回配置。配置随 origin fact 保存，自动跟随任务归档/恢复；不会只读继承来源任务的认证上下文。已有任务暂不支持修改此配置，请创建新任务。
+服务器自动填充 `assessment.source_path` 和 `source_archive`（文件名、SHA256、文件数、解压字节数）。客户端无需提供路径。旧的 JSON/source_path API 仍保留兼容性，但创建表单已经移除路径输入。
+
+```sh
+curl -H 'Authorization: Bearer YOUR_TOKEN' \
+  -F 'task={"description":"审计上传源码","goal":"审计权限控制并交付代码候选","assessment":{"mode":"code_audit"}}' \
+  -F 'source=@/path/to/project.zip' \
+  http://127.0.0.1:8797/api/tasks
+```
+
+`GET /api/tasks/{id}/assessment` 返回配置。上传源码存于任务自身目录，随任务文件归档/恢复；删除任务并选择删除任务文件时会一并清理源码。配置随 origin fact 保存，不会只读继承来源任务的认证上下文。已有任务暂不支持替换源码，请重新上传并创建新任务。
 
 ## 执行与工具
 

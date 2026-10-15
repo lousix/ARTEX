@@ -146,7 +146,10 @@ func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSe
 // TaskCreateOptions contains the task data that must be committed atomically
 // with the task/exploration row.
 type TaskCreateOptions struct {
-	Assessment           *hybrid.Config
+	Assessment *hybrid.Config
+	// PrepareAssessment stages task-owned source files before commit. The caller
+	// compensates filesystem writes on transaction failure. It may update Assessment.
+	PrepareAssessment    func(taskID int64) error
 	Name                 string // 可选任务名称;空=未命名
 	CategoryID           *int64
 	SourceTaskIDs        []int64
@@ -251,6 +254,18 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, descripti
 		t.LLMFailoverState = "default"
 	} else {
 		t.LLMFailoverState = "ready"
+	}
+	if opts.PrepareAssessment != nil {
+		if err := opts.PrepareAssessment(t.ID); err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(opts.Assessment)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{assessment}',$2::jsonb) WHERE exploration_id=$1 AND kind='fact' AND state='origin'`, expID, string(raw)); err != nil {
+			return nil, err
+		}
 	}
 	return t, tx.Commit()
 }

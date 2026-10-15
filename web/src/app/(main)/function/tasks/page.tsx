@@ -3085,7 +3085,9 @@ function CreateTaskSheet({
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [assessmentMode, setAssessmentMode] = React.useState<"blackbox" | "hybrid" | "code_audit">("blackbox");
-  const [sourcePath, setSourcePath] = React.useState("");
+  const [sourceArchive, setSourceArchive] = React.useState<File | null>(null);
+  const [sourceUploadReady, setSourceUploadReady] = React.useState(false);
+  const sourceArchiveRef = React.useRef<HTMLInputElement>(null);
   const [sourceRevision, setSourceRevision] = React.useState("");
   const [targetBaseURL, setTargetBaseURL] = React.useState("");
   const [authProfilesJSON, setAuthProfilesJSON] = React.useState("[]");
@@ -3097,6 +3099,27 @@ function CreateTaskSheet({
   const draftIdRef = React.useRef<string>("");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const sheetContentRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open || assessmentMode === "blackbox") return;
+    let disposed = false;
+    const checkUploadSupport = () => {
+      api
+        .health()
+        .then((health) => {
+          if (!disposed) setSourceUploadReady(health.features?.source_archive_upload === true);
+        })
+        .catch(() => {
+          if (!disposed) setSourceUploadReady(false);
+        });
+    };
+    checkUploadSupport();
+    const timer = window.setInterval(checkUploadSupport, 5000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [open, assessmentMode]);
 
   // load LLM profiles once for the create-task profile picker.
   React.useEffect(() => {
@@ -3141,6 +3164,14 @@ function CreateTaskSheet({
       toast.error(`最多关联 ${MAX_SOURCE_TASKS} 个来源任务`);
       return;
     }
+    if (assessmentMode !== "blackbox" && !sourceArchive) {
+      toast.error("请上传项目源码 ZIP 包");
+      return;
+    }
+    if (assessmentMode !== "blackbox" && !sourceUploadReady) {
+      toast.error("后端尚未就绪，请等待上传功能更新后重试");
+      return;
+    }
     setCreating(true);
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
@@ -3157,11 +3188,11 @@ function CreateTaskSheet({
         companyIds: companyIDs,
         timeoutSeconds: timeoutSec,
         seedFirstIntent: assessmentMode === "blackbox" && seedFirstIntent,
+        sourceArchive: assessmentMode !== "blackbox" ? (sourceArchive ?? undefined) : undefined,
         assessment:
           assessmentMode !== "blackbox" || authProfiles.length > 0
             ? {
                 mode: assessmentMode,
-                source_path: sourcePath.trim(),
                 revision: sourceRevision.trim(),
                 base_url: targetBaseURL.trim(),
                 profiles: assessmentMode === "code_audit" ? [] : authProfiles,
@@ -3186,7 +3217,7 @@ function CreateTaskSheet({
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
       setAssessmentMode("blackbox");
-      setSourcePath("");
+      setSourceArchive(null);
       setSourceRevision("");
       setTargetBaseURL("");
       setAuthProfilesJSON("[]");
@@ -3321,13 +3352,45 @@ function CreateTaskSheet({
             </Field>
             {assessmentMode !== "blackbox" && (
               <div className="grid gap-3">
-                <Label htmlFor="audit-source-path">源码目录</Label>
-                <Input
-                  id="audit-source-path"
-                  placeholder="工作空间相对目录，例如 sources/shop-api"
-                  value={sourcePath}
-                  onChange={(e) => setSourcePath(e.target.value)}
+                <Label htmlFor="audit-source-archive">项目代码包</Label>
+                <input
+                  ref={sourceArchiveRef}
+                  id="audit-source-archive"
+                  type="file"
+                  accept=".zip,application/zip"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    if (!/\.zip$/i.test(file.name)) {
+                      toast.error("请选择 ZIP 格式的代码包");
+                      event.target.value = "";
+                      return;
+                    }
+                    if (file.size > 128 * 1024 * 1024) {
+                      toast.error("代码包不能超过 128 MiB");
+                      event.target.value = "";
+                      return;
+                    }
+                    setSourceArchive(file);
+                  }}
                 />
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => sourceArchiveRef.current?.click()}
+                    disabled={creating}
+                  >
+                    <PaperclipIcon />
+                    {sourceArchive ? "更换代码包" : "选择 ZIP 代码包"}
+                  </Button>
+                  {sourceArchive && (
+                    <span className="truncate text-sm" title={sourceArchive.name}>
+                      {sourceArchive.name}（{(sourceArchive.size / 1024 / 1024).toFixed(1)} MiB）
+                    </span>
+                  )}
+                </div>
                 <Label htmlFor="audit-revision">源码版本（可选）</Label>
                 <Input
                   id="audit-revision"
@@ -3336,8 +3399,13 @@ function CreateTaskSheet({
                   onChange={(e) => setSourceRevision(e.target.value)}
                 />
                 <p className="text-muted-foreground text-xs">
-                  先将源码放入工作空间；审计过程中保持该目录不变，候选问题会保存引用片段。
+                  创建任务时自动上传、解压并关联源码，无需填写服务器路径。支持 ZIP，最大 128 MiB。
                 </p>
+                {!sourceUploadReady && (
+                  <p className="text-muted-foreground text-xs" role="status">
+                    后端尚未就绪或尚未加载上传功能，更新后将自动启用创建。
+                  </p>
+                )}
               </div>
             )}
             {assessmentMode !== "code_audit" && (
@@ -3493,9 +3561,12 @@ function CreateTaskSheet({
           <SheetClose asChild>
             <Button variant="outline">取消</Button>
           </SheetClose>
-          <Button onClick={createTask} disabled={creating || uploading}>
+          <Button
+            onClick={createTask}
+            disabled={creating || uploading || (assessmentMode !== "blackbox" && !sourceUploadReady)}
+          >
             {creating && <Spinner data-icon="inline-start" />}
-            {creating ? "创建中" : "创建"}
+            {creating ? (assessmentMode === "blackbox" ? "创建中" : "上传并创建中") : "创建"}
           </Button>
         </SheetFooter>
       </SheetContent>

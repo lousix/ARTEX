@@ -117,7 +117,9 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`/api${path}`, {
     ...init,
     headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !(typeof FormData !== "undefined" && init.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers as Record<string, string> | undefined),
     },
@@ -234,7 +236,13 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
 
 export const api = {
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
-  health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
+  health: () =>
+    get<{
+      ok: boolean;
+      service: string;
+      version: string;
+      features?: { source_archive_upload?: boolean };
+    }>("/health"),
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
@@ -260,6 +268,7 @@ export const api = {
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
+    sourceArchive?: File;
     assessment?: {
       mode: "blackbox" | "hybrid" | "code_audit";
       source_path?: string;
@@ -267,8 +276,8 @@ export const api = {
       base_url?: string;
       profiles?: { name: string; script_path: string; identity_path: string; subject_field?: string }[];
     };
-  }) =>
-    post<Task>("/tasks", {
+  }) => {
+    const payload = {
       name: input.name ?? "",
       category_id: input.categoryId ?? null,
       description: input.description,
@@ -282,7 +291,15 @@ export const api = {
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       assessment: input.assessment,
-    }),
+    };
+    if (input.sourceArchive && !MOCK) {
+      const form = new FormData();
+      form.append("task", JSON.stringify(payload));
+      form.append("source", input.sourceArchive);
+      return http<Task>("/tasks", { method: "POST", body: form });
+    }
+    return post<Task>("/tasks", payload);
+  },
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
